@@ -31,6 +31,8 @@ from __future__ import division
 import time
 import re
 import sys
+import zmq
+import json
 
 from google.cloud import speech
 
@@ -40,9 +42,34 @@ from six.moves import queue
 # Audio recording parameters
 STREAMING_LIMIT = 55000
 SAMPLE_RATE = 16000
-CHUNK_SIZE = int(SAMPLE_RATE / 10)  # 100ms
+CHUNK_SIZE = int(SAMPLE_RATE / 10)  # 10 100ms
 
-commands = ['chip go short', 'chip go mid', 'chip go long', 'chip stop', 'chip go slow', 'chip go fast', 'chip go faster', 'chip go manual', 'chip go auto']
+commands = ['chip go short',
+            'chip go mid',
+            'chip go long',
+            'chip go slow',
+            'chip go fast',
+            'chip go faster',
+            'chip stop',
+            'chip go manual',
+            'chip go auto',
+            'chip manual',
+            'chip auto']
+
+command_dicts = [{'move': {'speed':1.0, 'duration':0.0, 'distance':0.5}},
+                 {'move': {'speed':1.0, 'duration':0.0, 'distance':1.5}},
+                 {'move': {'speed':1.0, 'duration':0.0, 'distance':2.5}},
+                 {'move': {'speed':0.6, 'duration':7200.0, 'distance':0.0}},
+                 {'move': {'speed':1.0, 'duration':7200.0, 'distance':0.0}},
+                 {'move': {'speed':1.1, 'duration':7200.0, 'distance':0.0}},
+                 {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}},
+                 {'terminate':1},
+                 {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}},
+                 {'terminate':1},
+                 {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}}]
+
+# ZMQ_READ_PORT = 7777
+ZMQ_SEND_PORT = 7781
 
 def get_current_time():
     return int(round(time.time() * 1000))
@@ -131,7 +158,7 @@ class ResumableMicrophoneStream:
             yield b''.join(data)
 
 
-def listen_print_loop(responses, stream):
+def listen_print_loop(responses, stream, sock_send):
     """Iterates through server responses and prints them.
 
     The responses passed is a generator that will block until a response
@@ -146,52 +173,72 @@ def listen_print_loop(responses, stream):
     the next result to overwrite it, until the response is a final one. For the
     final one, print a newline to preserve the finalized transcription.
     """
-    responses = (r for r in responses if (
-            r.results and r.results[0].alternatives))
+    try:
+        responses = (r for r in responses if (
+                r.results and r.results[0].alternatives))
 
-    num_chars_printed = 0
-    for response in responses:
-        if not response.results:
-            continue
+        num_chars_printed = 0
+        for response in responses:
+            if not response.results:
+                continue
 
-        # The `results` list is consecutive. For streaming, we only care about
-        # the first result being considered, since once it's `is_final`, it
-        # moves on to considering the next utterance.
-        result = response.results[0]
-        if not result.alternatives:
-            continue
+            # The `results` list is consecutive. For streaming, we only care about
+            # the first result being considered, since once it's `is_final`, it
+            # moves on to considering the next utterance.
+            result = response.results[0]
+            if not result.alternatives:
+                continue
 
-        # Display the transcription of the top alternative.
-        top_alternative = result.alternatives[0]
-        transcript = top_alternative.transcript
+            # Display the transcription of the top alternative.
+            top_alternative = result.alternatives[0]
+            transcript = top_alternative.transcript
 
-        # Display interim results, but with a carriage return at the end of the
-        # line, so subsequent lines will overwrite them.
-        #
-        # If the previous result was longer than this one, we need to print
-        # some extra spaces to overwrite the previous result
-        overwrite_chars = ' ' * (num_chars_printed - len(transcript))
+            # Display interim results, but with a carriage return at the end of the
+            # line, so subsequent lines will overwrite them.
+            #
+            # If the previous result was longer than this one, we need to print
+            # some extra spaces to overwrite the previous result
+            overwrite_chars = ' ' * (num_chars_printed - len(transcript))
 
-        if not result.is_final:
-            sys.stdout.write(transcript + overwrite_chars + '\r')
-            sys.stdout.flush()
+            if not result.is_final:
+                sys.stdout.write(transcript + overwrite_chars + '\r')
+                sys.stdout.flush()
 
-            num_chars_printed = len(transcript)
-        else:
-            print(transcript + overwrite_chars)
+                num_chars_printed = len(transcript)
+            else:
+                print(transcript + overwrite_chars)
 
-            # Exit recognition if any of the transcribed phrases could be
-            # one of our keywords.
-            if re.search(r'\b(exit|quit)\b', transcript, re.I):
-                print('Exiting..')
-                stream.closed = True
-                break
+                # Exit recognition if any of the transcribed phrases could be
+                # one of our keywords.
+                if re.search(r'\b(exit|quit)\b', transcript, re.I):
+                    print('Exiting..')
+                    stream.closed = True
+                    break
 
-            for i in range(len(commands)):
-                if re.search(r'\b('+commands[i]+r')\b', transcript, re.I):
-                    print 'Command: ', commands[i]
+                command_idx = -1
+                for i in range(len(commands)):
+                    if re.search(r'\b('+commands[i]+r')\b', transcript, re.I):
+                        print 'Command: ', commands[i]
+                        command_idx = i
 
-            num_chars_printed = 0
+                if (command_idx > -1):
+                    # print 'Publishing command', command_idx
+
+                    voice_msg = {}
+                    voice_msg['handheld'] = command_dicts[command_idx]
+                    voice_msg_str = json.dumps(voice_msg)
+
+                    print 'Sending: ', voice_msg_str
+                    sock_send.send(voice_msg_str)
+
+
+                num_chars_printed = 0
+
+    except Exception as inst:
+        print(type(inst))
+        print(inst.args)
+        print(inst)
+        raise
 
 
 def main():
@@ -202,27 +249,46 @@ def main():
         language_code='en-US',
         speech_contexts=[speech.types.SpeechContext(phrases=commands)],
         max_alternatives=1,
-        enable_word_time_offsets=True)
+        enable_word_time_offsets=False,
+        # Enhanced models are only available to projects that opt in for audio data collection.
+        # A model must be specified to use enhanced model.
+        use_enhanced=True,
+        model='command_and_search'
+        )
     streaming_config = speech.types.StreamingRecognitionConfig(
         config=config,
         interim_results=True)
 
-    mic_manager = ResumableMicrophoneStream(SAMPLE_RATE, CHUNK_SIZE)
-
     print('Say "Quit" or "Exit" to terminate the program.')
 
-    with mic_manager as stream:
-        while not stream.closed:
-            audio_generator = stream.generator()
-            requests = (speech.types.StreamingRecognizeRequest(
-                audio_content=content)
-                for content in audio_generator)
+    zmq_context = zmq.Context()
+    sock_send = zmq_context.socket(zmq.PUB)
+    sock_send.bind('tcp://*:%d' % ZMQ_SEND_PORT)
 
-            responses = client.streaming_recognize(streaming_config,
-                                                   requests)
-            # Now, put the transcription responses to use.
-            listen_print_loop(responses, stream)
+    while (True):
 
+        try:
+
+            mic_manager = ResumableMicrophoneStream(SAMPLE_RATE, CHUNK_SIZE)
+
+            with mic_manager as stream:
+                while not stream.closed:
+                    print('starting stream')
+                    audio_generator = stream.generator()
+                    requests = (speech.types.StreamingRecognizeRequest(
+                        audio_content=content)
+                        for content in audio_generator)
+
+                    responses = client.streaming_recognize(streaming_config,
+                                                           requests)
+                    # Now, put the transcription responses to use.
+                    listen_print_loop(responses, stream, sock_send)
+
+        except Exception as inst:
+
+            print(type(inst))
+            print(inst.args)
+            print(inst)
 
 if __name__ == '__main__':
     main()
