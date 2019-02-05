@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+# Copyright 2019 Anantak Robotics Inc.
+
 # Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,16 +16,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Google Cloud Speech API sample application using the streaming API.
-
-NOTE: This module requires the additional dependency `pyaudio`. To install
-using pip:
-
-    pip install pyaudio
-
-Example usage:
-    python transcribe_streaming_indefinite.py
-"""
 
 # [START speech_transcribe_infinite_streaming]
 from __future__ import division
@@ -44,17 +36,15 @@ STREAMING_LIMIT = 55000
 SAMPLE_RATE = 16000
 CHUNK_SIZE = int(SAMPLE_RATE / 10)  # 10 100ms
 
-commands = ['chip go short',
-            'chip go mid',
-            'chip go long',
-            'chip go slow',
-            'chip go fast',
-            'chip go faster',
-            'chip stop',
-            'chip go manual',
-            'chip go auto',
-            'chip manual',
-            'chip auto']
+commands = ['go short',
+            'go medium',
+            'go long',
+            'go slow',
+            'go fast',
+            'go run',
+            'go stop',
+            'go manual',
+            'go auto']
 
 command_dicts = [{'move': {'speed':1.0, 'duration':0.0, 'distance':0.5}},
                  {'move': {'speed':1.0, 'duration':0.0, 'distance':1.5}},
@@ -64,12 +54,13 @@ command_dicts = [{'move': {'speed':1.0, 'duration':0.0, 'distance':0.5}},
                  {'move': {'speed':1.1, 'duration':7200.0, 'distance':0.0}},
                  {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}},
                  {'terminate':1},
-                 {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}},
-                 {'terminate':1},
                  {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}}]
 
 # ZMQ_READ_PORT = 7777
 ZMQ_SEND_PORT = 7781
+
+last_command_ts = 0
+last_command_num = -1
 
 def get_current_time():
     return int(round(time.time() * 1000))
@@ -173,6 +164,10 @@ def listen_print_loop(responses, stream, sock_send):
     the next result to overwrite it, until the response is a final one. For the
     final one, print a newline to preserve the finalized transcription.
     """
+
+    global last_command_ts
+    global last_command_num
+
     try:
         responses = (r for r in responses if (
                 r.results and r.results[0].alternatives))
@@ -193,6 +188,16 @@ def listen_print_loop(responses, stream, sock_send):
             top_alternative = result.alternatives[0]
             transcript = top_alternative.transcript
 
+            accept = False
+            if (result.stability > 0.0) or result.is_final:
+                accept = True
+
+            if (result.stability > 0.0):
+                stability_str = ' %.2f' % result.stability
+                transcript += stability_str
+            if (result.is_final):
+                transcript += ' Final'
+
             # Display interim results, but with a carriage return at the end of the
             # line, so subsequent lines will overwrite them.
             #
@@ -200,7 +205,8 @@ def listen_print_loop(responses, stream, sock_send):
             # some extra spaces to overwrite the previous result
             overwrite_chars = ' ' * (num_chars_printed - len(transcript))
 
-            if not result.is_final:
+            # if not result.is_final:
+            if not accept:
                 sys.stdout.write(transcript + overwrite_chars + '\r')
                 sys.stdout.flush()
 
@@ -218,19 +224,33 @@ def listen_print_loop(responses, stream, sock_send):
                 command_idx = -1
                 for i in range(len(commands)):
                     if re.search(r'\b('+commands[i]+r')\b', transcript, re.I):
-                        print 'Command: ', commands[i]
+                        print '   Command: ', commands[i]
                         command_idx = i
 
                 if (command_idx > -1):
                     # print 'Publishing command', command_idx
 
-                    voice_msg = {}
-                    voice_msg['handheld'] = command_dicts[command_idx]
-                    voice_msg_str = json.dumps(voice_msg)
+                    curr_command_ts = time.time()
 
-                    print 'Sending: ', voice_msg_str
-                    sock_send.send(voice_msg_str)
+                    # Check if running commands are being repeated too fast
+                    send_command = True
+                    if (last_command_num == command_idx):
+                        if (command_idx < 6):
+                            if (curr_command_ts - last_command_ts < 2):
+                                send_command = False
 
+                    if (send_command):
+                        voice_msg = {}
+                        voice_msg['handheld'] = command_dicts[command_idx]
+                        voice_msg_str = json.dumps(voice_msg)
+
+                        print '   Sending: ', voice_msg_str
+                        sock_send.send(voice_msg_str)
+                        last_command_ts = curr_command_ts
+                        last_command_num = command_idx
+
+                    else:
+                        print '   Too soon to repeat command'
 
                 num_chars_printed = 0
 
@@ -240,6 +260,13 @@ def listen_print_loop(responses, stream, sock_send):
         print(inst)
         raise
 
+"""
+single_utterance - (optional, defaults to false) indicates whether this request should automatically
+end after speech is no longer detected. If set, Speech-to-Text will detect pauses, silence, or non-speech
+audio to determine when to end recognition. If not set, the stream will continue to listen and process
+audio until either the stream is closed directly, or the stream's limit length has been exceeded.
+Setting single_utterance to true is useful for processing voice commands.
+"""
 
 def main():
     client = speech.SpeechClient()
@@ -257,6 +284,7 @@ def main():
         )
     streaming_config = speech.types.StreamingRecognitionConfig(
         config=config,
+        single_utterance=False,
         interim_results=True)
 
     print('Say "Quit" or "Exit" to terminate the program.')
