@@ -42,9 +42,11 @@ commands = ['go short',
             'go slow',
             'go fast',
             'go run',
-            'go stop',
             'go manual',
-            'go auto']
+            'go stop',
+            'go auto',
+            'stop',
+            'halt']
 
 command_dicts = [{'move': {'speed':1.0, 'duration':0.0, 'distance':0.5}},
                  {'move': {'speed':1.0, 'duration':0.0, 'distance':1.5}},
@@ -52,8 +54,10 @@ command_dicts = [{'move': {'speed':1.0, 'duration':0.0, 'distance':0.5}},
                  {'move': {'speed':0.6, 'duration':7200.0, 'distance':0.0}},
                  {'move': {'speed':1.0, 'duration':7200.0, 'distance':0.0}},
                  {'move': {'speed':1.1, 'duration':7200.0, 'distance':0.0}},
-                 {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}},
                  {'terminate':1},
+                 {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}},
+                 {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}},
+                 {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}},
                  {'move': {'speed':0.0, 'duration':0.0, 'distance':0.0}}]
 
 # ZMQ_READ_PORT = 7777
